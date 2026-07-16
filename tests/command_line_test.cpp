@@ -15,6 +15,7 @@
  */
 #include <cassert>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <cgride/cli/command_line.hpp>
@@ -29,7 +30,7 @@ int main()
     assert(command_line.argument_count() == 0);
     assert(command_line.empty());
     assert(!command_line.valid());
-    assert(!command_line.argument(0).has_value());
+    assert(!std::as_const(command_line).argument(0).has_value());
     assert(!command_line.contains("build"));
     assert(!command_line.has("--help"));
     assert(!command_line.has_flag("--help"));
@@ -47,7 +48,7 @@ int main()
     assert(!command_line.empty());
     assert(command_line.valid());
 
-    assert(command_line.argument(0).value() == "build");
+    assert(std::as_const(command_line).argument(0).value() == "build");
     assert(command_line.argument(1).value() == "--release");
     assert(command_line.argument(2).value() == "--verbose");
     assert(!command_line.argument(3).has_value());
@@ -196,7 +197,7 @@ int main()
 
     assert(command_line.program_name() == "cgride");
     assert(command_line.argument_count() == 4);
-    assert(command_line.argument(0).value() == "build");
+    assert(std::as_const(command_line).argument(0).value() == "build");
     assert(command_line.option_value("--config").value() == "cgride.config");
     assert(command_line.has("--release"));
   }
@@ -223,7 +224,7 @@ int main()
 
     assert(command_line.program_name() == "cgride");
     assert(command_line.argument_count() == 2);
-    assert(command_line.argument(0).value() == "build");
+    assert(std::as_const(command_line).argument(0).value() == "build");
     assert(command_line.argument(1).value() == "--help");
     assert(command_line.has("--help"));
   }
