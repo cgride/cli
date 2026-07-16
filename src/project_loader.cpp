@@ -32,12 +32,14 @@
 #include <cgride/config/project_reader.hpp>
 #include <cgride/core/command.hpp>
 #include <cgride/core/error.hpp>
+#include <cgride/core/hash.hpp>
 #include <cgride/core/platform.hpp>
 #include <cgride/executor/execution_options.hpp>
 #include <cgride/executor/process.hpp>
 #include <cgride/project/target_kind.hpp>
 #include <cgride/toolchains/compiler_kind.hpp>
 #include <cgride/toolchains/discovery.hpp>
+#include <cgride/cli/version.hpp>
 
 namespace cgride::cli
 {
@@ -628,6 +630,112 @@ int main()
       return cgride::core::Result<void>::ok();
     }
 
+    [[nodiscard]] cgride::core::Result<std::string> read_text_file(
+        const std::filesystem::path &path)
+    {
+      std::ifstream stream(path, std::ios::binary);
+
+      if (!stream)
+      {
+        return Error(
+            ErrorCode::IoError,
+            "Failed to read file.",
+            path);
+      }
+
+      std::ostringstream content;
+      content << stream.rdbuf();
+      return content.str();
+    }
+
+    [[nodiscard]] cgride::core::Result<bool> write_text_file_if_changed(
+        const std::filesystem::path &path,
+        const std::string &content)
+    {
+      if (exists_regular_file(path))
+      {
+        auto existing = read_text_file(path);
+
+        if (!existing)
+        {
+          return existing.error();
+        }
+
+        if (existing.value() == content)
+        {
+          return false;
+        }
+      }
+
+      auto written = write_text_file(path, content);
+
+      if (!written)
+      {
+        return written.error();
+      }
+
+      return true;
+    }
+
+    [[nodiscard]] cgride::core::Result<std::string> config_signature(
+        const std::filesystem::path &project_file,
+        const std::string &helper_source_content,
+        const std::string &cmake_source_content)
+    {
+      auto project_hash = cgride::core::hash_file_hex(project_file);
+
+      if (!project_hash)
+      {
+        return project_hash.error();
+      }
+
+      cgride::core::Hasher hasher;
+      hasher.update("cgride-config-state-v2");
+      hasher.update(cgride::cli::version_string);
+      hasher.update(project_file.generic_string());
+      hasher.update(project_hash.value());
+      hasher.update(helper_source_content);
+      hasher.update(cmake_source_content);
+
+      const auto *prefix_path = std::getenv("CGRIDE_PREFIX_PATH");
+
+      if (prefix_path != nullptr)
+      {
+        hasher.update(prefix_path);
+      }
+
+      const auto *cxx = std::getenv("CXX");
+
+      if (cxx != nullptr)
+      {
+        hasher.update(cxx);
+      }
+
+      return hasher.hex();
+    }
+
+    [[nodiscard]] bool config_helper_is_fresh(
+        const std::filesystem::path &state_file,
+        const std::filesystem::path &executable,
+        const std::string &signature)
+    {
+      if (!exists_regular_file(executable) || !exists_regular_file(state_file))
+      {
+        return false;
+      }
+
+      std::ifstream stream(state_file, std::ios::binary);
+
+      if (!stream)
+      {
+        return false;
+      }
+
+      std::string existing;
+      std::getline(stream, existing);
+      return existing == signature;
+    }
+
     [[nodiscard]] std::filesystem::path config_executable_path(
         const std::filesystem::path &config_build_dir)
     {
@@ -702,29 +810,78 @@ int main()
       return process.standard_output();
     }
 
-    [[nodiscard]] cgride::core::Result<cgride::project::Project> load_cpp_project(
+    struct CppProjectLoad
+    {
+      cgride::project::Project project;
+      std::optional<cgride::toolchains::Toolchain> toolchain{};
+    };
+
+    [[nodiscard]] cgride::core::Result<CppProjectLoad> load_cpp_project(
         const std::filesystem::path &project_file,
         const std::filesystem::path &project_root,
-        const cgride::toolchains::Toolchain &toolchain,
         CommandContext &context)
     {
       const auto config_dir = project_root / ".cgride" / "config";
       const auto config_build_dir = config_dir / "build";
       const auto helper_source = config_dir / "cgride_config_main.cpp";
       const auto cmake_source = config_dir / "CMakeLists.txt";
+      const auto state_file = config_dir / "cgride_config.state";
+      const auto executable = config_executable_path(config_build_dir);
+      const auto helper_content = config_helper_source();
+      const auto cmake_content = generated_cmake_source(project_file);
 
-      auto wrote_helper = write_text_file(helper_source, config_helper_source());
+      auto signature = config_signature(project_file, helper_content, cmake_content);
+
+      if (!signature)
+      {
+        return signature.error();
+      }
+
+      if (config_helper_is_fresh(state_file, executable, signature.value()))
+      {
+        context.terminal().print_verbose("config: fresh");
+
+        auto emitted = run_config_executable(executable, project_root);
+
+        if (!emitted)
+        {
+          return emitted.error();
+        }
+
+        cgride::config::ProjectReader reader;
+        auto project = reader.read_string(emitted.value());
+
+        if (!project)
+        {
+          return project.error();
+        }
+
+        CppProjectLoad loaded;
+        loaded.project = std::move(project.value());
+        return loaded;
+      }
+
+      context.terminal().print_verbose("config: rebuilding");
+
+      auto wrote_helper = write_text_file_if_changed(helper_source, helper_content);
 
       if (!wrote_helper)
       {
         return wrote_helper.error();
       }
 
-      auto wrote_cmake = write_text_file(cmake_source, generated_cmake_source(project_file));
+      auto wrote_cmake = write_text_file_if_changed(cmake_source, cmake_content);
 
       if (!wrote_cmake)
       {
         return wrote_cmake.error();
+      }
+
+      auto toolchain = discover_cli_toolchain(context);
+
+      if (!toolchain)
+      {
+        return toolchain.error();
       }
 
       cgride::core::Command configure("cmake");
@@ -734,9 +891,9 @@ int main()
           .arg("-B")
           .arg(config_build_dir.string());
 
-      if (toolchain.cxx_compiler().has_value())
+      if (toolchain.value().cxx_compiler().has_value())
       {
-        configure.arg("-DCMAKE_CXX_COMPILER=" + toolchain.cxx_compiler().value().string());
+        configure.arg("-DCMAKE_CXX_COMPILER=" + toolchain.value().cxx_compiler().value().string());
       }
 
       const auto *prefix_path = std::getenv("CGRIDE_PREFIX_PATH");
@@ -772,8 +929,15 @@ int main()
         return built.error();
       }
 
+      auto stored_state = write_text_file(state_file, signature.value() + "\n");
+
+      if (!stored_state)
+      {
+        return stored_state.error();
+      }
+
       auto emitted = run_config_executable(
-          config_executable_path(config_build_dir),
+          executable,
           project_root);
 
       if (!emitted)
@@ -782,7 +946,17 @@ int main()
       }
 
       cgride::config::ProjectReader reader;
-      return reader.read_string(emitted.value());
+      auto project = reader.read_string(emitted.value());
+
+      if (!project)
+      {
+        return project.error();
+      }
+
+      CppProjectLoad loaded;
+      loaded.project = std::move(project.value());
+      loaded.toolchain = std::move(toolchain.value());
+      return loaded;
     }
 
     [[nodiscard]] cgride::core::Result<LoadedProject> load_legacy_config(
@@ -830,17 +1004,9 @@ int main()
 
     if (cpp_file.has_value())
     {
-      auto toolchain = discover_cli_toolchain(context);
-
-      if (!toolchain)
-      {
-        return toolchain.error();
-      }
-
       auto project = load_cpp_project(
           cpp_file.value(),
           cpp_file->parent_path(),
-          toolchain.value(),
           context);
 
       if (!project)
@@ -849,9 +1015,10 @@ int main()
       }
 
       LoadedProject loaded;
-      loaded.project = normalize_project_paths(std::move(project.value()), cpp_file->parent_path());
+      loaded.project = normalize_project_paths(std::move(project.value().project), cpp_file->parent_path());
       loaded.project_root = cpp_file->parent_path();
       loaded.project_file = cpp_file.value();
+      loaded.toolchain = std::move(project.value().toolchain);
       loaded.legacy_config = false;
 
       return loaded;
