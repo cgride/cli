@@ -33,6 +33,7 @@ namespace cgride::cli
     cgride::project::Project project;
     std::filesystem::path project_root;
     std::filesystem::path project_file;
+    std::optional<cgride::toolchains::Toolchain> toolchain{};
     bool legacy_config{false};
   };
 

@@ -220,10 +220,10 @@ namespace cgride::cli
       {
       }
 
-      void start()
+      void start(Clock::time_point started_at = Clock::now())
       {
-        started_at_ = Clock::now();
-        last_rendered_at_ = started_at_;
+        started_at_ = started_at;
+        last_rendered_at_ = Clock::now();
 
         if (dynamic_)
         {
@@ -394,6 +394,7 @@ namespace cgride::cli
 
   ExitCode BuildCommand::run(CommandContext &context) const
   {
+    const auto command_started_at = Clock::now();
     auto &terminal = context.terminal();
 
     if (!context.valid())
@@ -406,6 +407,7 @@ namespace cgride::cli
 
     terminal.print_verbose("Loading project.");
 
+    const auto load_started_at = Clock::now();
     auto loaded = load_project(context);
 
     if (!loaded)
@@ -413,32 +415,52 @@ namespace cgride::cli
       return config_error(terminal, loaded.error());
     }
 
+    auto loaded_project = std::move(loaded.value());
+    terminal.print_verbose("project root: " + loaded_project.project_root.string());
+    terminal.print_verbose("load project: " + format_duration(Clock::now() - load_started_at));
     terminal.print_verbose("Preparing build request.");
 
-    auto toolchain = discover_cli_toolchain(context);
+    cgride::toolchains::Toolchain selected_toolchain;
 
-    if (!toolchain)
+    if (loaded_project.toolchain.has_value())
     {
-      return build_error(terminal, toolchain.error());
+      terminal.print_verbose("toolchain: reused");
+      selected_toolchain = std::move(loaded_project.toolchain.value());
+    }
+    else
+    {
+      const auto toolchain_started_at = Clock::now();
+      auto toolchain = discover_cli_toolchain(context);
+
+      if (!toolchain)
+      {
+        return build_error(terminal, toolchain.error());
+      }
+
+      terminal.print_verbose("toolchain: discovered in " + format_duration(Clock::now() - toolchain_started_at));
+      selected_toolchain = std::move(toolchain.value());
     }
 
-    auto build_options = make_build_options(context, loaded.value().project_root);
-    const auto label = label_for_build(loaded.value(), build_options);
+    auto build_options = make_build_options(context, loaded_project.project_root);
+    const auto label = label_for_build(loaded_project, build_options);
 
     cgride::engine::BuildRequest request;
 
     request
-        .project(std::move(loaded.value().project))
-        .toolchain(std::move(toolchain.value()))
+        .project(std::move(loaded_project.project))
+        .toolchain(std::move(selected_toolchain))
         .options(build_options);
 
     cgride::engine::BuildEngine engine;
+    const auto plan_started_at = Clock::now();
     auto planned = engine.plan(request);
 
     if (!planned)
     {
       return build_error(terminal, planned.error());
     }
+
+    terminal.print_verbose("graph: planned in " + format_duration(Clock::now() - plan_started_at));
 
     auto plan = std::move(planned.value());
     BuildProgress progress(
@@ -451,9 +473,12 @@ namespace cgride::cli
       progress.handle(event);
     });
 
-    progress.start();
+    progress.start(command_started_at);
 
+    const auto execute_started_at = Clock::now();
     auto result = engine.execute(plan, build_options);
+    terminal.print_verbose("execute: " + format_duration(Clock::now() - execute_started_at));
+    terminal.print_verbose("total: " + format_duration(Clock::now() - command_started_at));
 
     progress.finish(result);
 
