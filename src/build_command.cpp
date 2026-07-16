@@ -15,55 +15,18 @@
  */
 #include <cgride/cli/build_command.hpp>
 
-#include <filesystem>
-#include <string>
 #include <utility>
 
-#include <cgride/config/config_loader.hpp>
-#include <cgride/config/project_reader.hpp>
 #include <cgride/core/error.hpp>
 #include <cgride/engine/build_engine.hpp>
-#include <cgride/engine/build_options.hpp>
 #include <cgride/engine/build_request.hpp>
-#include <cgride/toolchains/discovery.hpp>
-#include <cgride/toolchains/compiler_kind.hpp>
+
+#include "project_loader.hpp"
 
 namespace cgride::cli
 {
   namespace
   {
-    [[nodiscard]] std::filesystem::path default_build_directory(
-        const CommandContext &context)
-    {
-      return context.resolved_project_root() / ".cgride" / "build";
-    }
-
-    [[nodiscard]] cgride::engine::BuildOptions make_build_options(
-        const CommandContext &context)
-    {
-      const auto &cli_options = context.options();
-
-      cgride::engine::BuildOptions build_options;
-
-      build_options
-          .build_directory(default_build_directory(context))
-          .mode(cli_options.release()
-                    ? cgride::engine::BuildMode::Release
-                    : cgride::engine::BuildMode::Debug)
-          .jobs(cli_options.jobs())
-          .rebuild(cli_options.rebuild())
-          .use_cache(!cli_options.no_cache())
-          .dry_run(cli_options.dry_run())
-          .verbose(cli_options.verbose());
-
-      if (cli_options.has_target())
-      {
-        build_options.target(cli_options.target().value());
-      }
-
-      return build_options;
-    }
-
     void print_error_detail(
         Terminal &terminal,
         const cgride::core::Error &error)
@@ -111,46 +74,30 @@ namespace cgride::cli
 
     terminal.verbose(context.options().verbose());
 
-    terminal.print_verbose("Loading project configuration.");
+    terminal.print_verbose("Loading project.");
 
-    cgride::config::ConfigLoader loader(context.config_options());
+    auto loaded = load_project(context);
 
-    auto document = loader.load();
-
-    if (!document)
+    if (!loaded)
     {
-      return config_error(terminal, document.error());
+      return config_error(terminal, loaded.error());
     }
 
-    terminal.print_verbose("Reading project model.");
+    terminal.print_verbose("Preparing build request.");
 
-    cgride::config::ProjectReader reader;
-
-    auto project = reader.read(document.value());
-
-    if (!project)
-    {
-      return config_error(terminal, project.error());
-    }
-
-    terminal.print_verbose("Discovering C++ toolchain.");
-
-    auto toolchain = cgride::toolchains::discover_toolchain(
-        cgride::toolchains::CompilerKind::Unknown);
+    auto toolchain = discover_cli_toolchain(context);
 
     if (!toolchain)
     {
       return build_error(terminal, toolchain.error());
     }
 
-    terminal.print_info("Building project.");
-
     cgride::engine::BuildRequest request;
 
     request
-        .project(std::move(project.value()))
+        .project(std::move(loaded.value().project))
         .toolchain(std::move(toolchain.value()))
-        .options(make_build_options(context));
+        .options(make_build_options(context, loaded.value().project_root));
 
     cgride::engine::BuildEngine engine;
 
@@ -166,8 +113,6 @@ namespace cgride::cli
       terminal.print_error("Build failed.");
       return ExitCode::BuildError;
     }
-
-    terminal.print_success("Build finished.");
 
     return ExitCode::Success;
   }

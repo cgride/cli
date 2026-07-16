@@ -232,7 +232,7 @@ namespace cgride::cli
         .rebuild(command_line.has("--rebuild"))
         .no_cache(command_line.has("--no-cache"))
         .dry_run(command_line.has("--dry-run"))
-        .verbose(command_line.has("--verbose"));
+        .verbose(command_line.has("--verbose") || command_line.has("-v"));
 
     if (!options.valid())
     {

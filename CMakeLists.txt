@@ -30,12 +30,17 @@ if(NOT TARGET cgride::engine)
   find_package(cgride-engine CONFIG REQUIRED)
 endif()
 
+if(NOT TARGET cgride::executor)
+  find_package(cgride-executor CONFIG REQUIRED)
+endif()
+
 add_library(cgride_cli
   src/exit_code.cpp
   src/command_line.cpp
   src/cli_options.cpp
   src/terminal.cpp
   src/command_context.cpp
+  src/project_loader.cpp
   src/build_command.cpp
   src/run_command.cpp
   src/application.cpp
@@ -60,6 +65,7 @@ target_link_libraries(cgride_cli
     cgride::config
     cgride::toolchains
     cgride::engine
+    cgride::executor
 )
 
 set_target_properties(cgride_cli
