@@ -114,7 +114,6 @@ namespace cgride::cli
     {
       constexpr std::string_view reset = "\033[0m";
       constexpr std::string_view bold = "\033[1m";
-      constexpr std::string_view dim = "\033[2m";
       constexpr std::string_view red = "\033[31m";
       constexpr std::string_view green = "\033[32m";
       constexpr std::string_view yellow = "\033[33m";
