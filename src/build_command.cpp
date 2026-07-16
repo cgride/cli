@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -89,6 +90,54 @@ namespace cgride::cli
     [[nodiscard]] bool can_render_dynamic_progress(const Terminal &terminal) noexcept
     {
       return !terminal.quiet() && (&terminal.output_stream() == &std::cout) && stdout_is_terminal();
+    }
+
+    [[nodiscard]] bool color_is_disabled() noexcept
+    {
+      const auto *no_color = std::getenv("NO_COLOR");
+
+      if (no_color != nullptr)
+      {
+        return true;
+      }
+
+      const auto *term = std::getenv("TERM");
+      return term != nullptr && std::string_view(term) == "dumb";
+    }
+
+    [[nodiscard]] bool can_render_color(const Terminal &terminal) noexcept
+    {
+      return can_render_dynamic_progress(terminal) && !color_is_disabled();
+    }
+
+    namespace color
+    {
+      constexpr std::string_view reset = "\033[0m";
+      constexpr std::string_view bold = "\033[1m";
+      constexpr std::string_view dim = "\033[2m";
+      constexpr std::string_view red = "\033[31m";
+      constexpr std::string_view green = "\033[32m";
+      constexpr std::string_view yellow = "\033[33m";
+      constexpr std::string_view cyan = "\033[36m";
+      constexpr std::string_view bright_black = "\033[90m";
+    } // namespace color
+
+    [[nodiscard]] std::string paint(
+        bool enabled,
+        std::string_view style,
+        std::string_view value)
+    {
+      if (!enabled)
+      {
+        return std::string(value);
+      }
+
+      std::string output;
+      output.reserve(style.size() + value.size() + color::reset.size());
+      output.append(style);
+      output.append(value);
+      output.append(color::reset);
+      return output;
     }
 
     [[nodiscard]] std::string format_duration(Clock::duration duration)
@@ -167,7 +216,8 @@ namespace cgride::cli
             label_(std::move(label)),
             mode_(mode),
             total_tasks_(total_tasks),
-            dynamic_(can_render_dynamic_progress(terminal))
+            dynamic_(can_render_dynamic_progress(terminal)),
+            color_(can_render_color(terminal))
       {
       }
 
@@ -193,8 +243,14 @@ namespace cgride::cli
           break;
 
         case cgride::core::EventKind::TaskFinished:
+          ++completed_tasks_;
+          current_task_ = compact_task_name(event.message());
+          render(false);
+          break;
+
         case cgride::core::EventKind::TaskSkipped:
           ++completed_tasks_;
+          ++skipped_tasks_;
           current_task_ = compact_task_name(event.message());
           render(false);
           break;
@@ -224,7 +280,10 @@ namespace cgride::cli
           return;
         }
 
-        terminal_.writeln(summary_line("built", elapsed));
+        const auto status = completed_tasks_ != 0 && completed_tasks_ == skipped_tasks_
+                                ? std::string_view("fresh")
+                                : std::string_view("built");
+        terminal_.writeln(summary_line(status, elapsed));
       }
 
     private:
@@ -233,13 +292,23 @@ namespace cgride::cli
           Clock::duration elapsed) const
       {
         std::ostringstream output;
-        output << "cgride " << status << ' ' << label_ << " ["
-               << cgride::engine::to_string(mode_) << "] in "
-               << format_duration(elapsed);
+        const auto status_style = status == "failed" ? color::red : (status == "fresh" ? color::cyan : color::green);
+        output << paint(color_, color::bold, "cgride") << ' '
+               << paint(color_, status_style, status) << ' '
+               << paint(color_, color::bold, label_) << ' '
+               << paint(color_, color::bright_black, "[")
+               << paint(color_, color::cyan, cgride::engine::to_string(mode_))
+               << paint(color_, color::bright_black, "]") << " in "
+               << paint(color_, color::yellow, format_duration(elapsed));
 
         if (total_tasks_ != 0)
         {
-          output << " (" << completed_tasks_ << '/' << total_tasks_ << " tasks)";
+          const auto rebuilt_tasks = completed_tasks_ >= skipped_tasks_
+                                         ? completed_tasks_ - skipped_tasks_
+                                         : std::size_t{0};
+          output << ' ' << paint(color_, color::bright_black, "(")
+                 << rebuilt_tasks << " rebuilt, " << skipped_tasks_ << " cached"
+                 << paint(color_, color::bright_black, ")");
         }
 
         return output.str();
@@ -260,7 +329,14 @@ namespace cgride::cli
           bar.push_back(index < filled ? '#' : '.');
         }
 
-        return bar;
+        if (!color_)
+        {
+          return bar;
+        }
+
+        return std::string(color::green) + bar.substr(0, filled) +
+               std::string(color::bright_black) + bar.substr(filled) +
+               std::string(color::reset);
       }
 
       void render(bool force)
@@ -282,11 +358,14 @@ namespace cgride::cli
         const auto spin = spinner[spinner_index_++ % 4];
 
         std::ostringstream line;
-        line << "\r\033[2K" << spin << " cgride "
-             << '[' << progress_bar() << "] "
-             << completed_tasks_ << '/' << total_tasks_ << ' '
-             << label_ << "  " << current_task_ << "  "
-             << format_duration(now - started_at_);
+        line << "\r\033[2K" << paint(color_, color::green, std::string_view(&spin, 1))
+             << ' ' << paint(color_, color::bold, "cgride") << ' '
+             << paint(color_, color::bright_black, "[") << progress_bar()
+             << paint(color_, color::bright_black, "]") << ' '
+             << paint(color_, color::cyan, std::to_string(completed_tasks_) + "/" + std::to_string(total_tasks_)) << ' '
+             << paint(color_, color::bold, label_) << "  "
+             << paint(color_, color::bright_black, current_task_) << "  "
+             << paint(color_, color::yellow, format_duration(now - started_at_));
 
         terminal_.write(line.str());
         terminal_.output_stream().flush();
@@ -306,6 +385,8 @@ namespace cgride::cli
       std::size_t spinner_index_{0};
       std::string current_task_{};
       bool dynamic_{false};
+      bool color_{false};
+      std::size_t skipped_tasks_{0};
       Clock::time_point started_at_{Clock::now()};
       Clock::time_point last_rendered_at_{Clock::now()};
     };
