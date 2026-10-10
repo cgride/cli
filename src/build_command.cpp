@@ -18,7 +18,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
-#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -27,6 +26,7 @@
 #include <utility>
 
 #include <cgride/core/error.hpp>
+#include <cgride/core/environment.hpp>
 #include <cgride/core/event.hpp>
 #include <cgride/engine/build_engine.hpp>
 #include <cgride/engine/build_request.hpp>
@@ -94,15 +94,15 @@ namespace cgride::cli
 
     [[nodiscard]] bool color_is_disabled() noexcept
     {
-      const auto *no_color = std::getenv("NO_COLOR");
+      const auto no_color = cgride::core::environment_variable("NO_COLOR");
 
-      if (no_color != nullptr)
+      if (no_color.has_value())
       {
         return true;
       }
 
-      const auto *term = std::getenv("TERM");
-      return term != nullptr && std::string_view(term) == "dumb";
+      const auto term = cgride::core::environment_variable("TERM");
+      return term.has_value() && term.value() == "dumb";
     }
 
     [[nodiscard]] bool can_render_color(const Terminal &terminal) noexcept

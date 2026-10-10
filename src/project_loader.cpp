@@ -16,7 +16,6 @@
 #include "project_loader.hpp"
 
 #include <algorithm>
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -32,6 +31,7 @@
 #include <cgride/config/project_reader.hpp>
 #include <cgride/core/command.hpp>
 #include <cgride/core/error.hpp>
+#include <cgride/core/environment.hpp>
 #include <cgride/core/hash.hpp>
 #include <cgride/core/platform.hpp>
 #include <cgride/executor/execution_options.hpp>
@@ -697,18 +697,18 @@ int main()
       hasher.update(helper_source_content);
       hasher.update(cmake_source_content);
 
-      const auto *prefix_path = std::getenv("CGRIDE_PREFIX_PATH");
+      const auto prefix_path = cgride::core::environment_variable("CGRIDE_PREFIX_PATH");
 
-      if (prefix_path != nullptr)
+      if (prefix_path.has_value())
       {
-        hasher.update(prefix_path);
+        hasher.update(prefix_path.value());
       }
 
-      const auto *cxx = std::getenv("CXX");
+      const auto cxx = cgride::core::environment_variable("CXX");
 
-      if (cxx != nullptr)
+      if (cxx.has_value())
       {
-        hasher.update(cxx);
+        hasher.update(cxx.value());
       }
 
       return hasher.hex();
@@ -896,11 +896,11 @@ int main()
         configure.arg("-DCMAKE_CXX_COMPILER=" + toolchain.value().cxx_compiler().value().string());
       }
 
-      const auto *prefix_path = std::getenv("CGRIDE_PREFIX_PATH");
+      const auto prefix_path = cgride::core::environment_variable("CGRIDE_PREFIX_PATH");
 
-      if (prefix_path != nullptr && std::string_view(prefix_path).size() != 0)
+      if (prefix_path.has_value() && !prefix_path->empty())
       {
-        configure.arg(std::string("-DCMAKE_PREFIX_PATH=") + prefix_path);
+        configure.arg(std::string("-DCMAKE_PREFIX_PATH=") + prefix_path.value());
       }
 
       auto configured = run_internal_process(
